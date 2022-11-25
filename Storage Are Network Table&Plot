@@ -1,0 +1,146 @@
+import os
+import sys
+import catboost
+import plotly.graph_objs as go
+import matplotlib.pyplot as plt
+from catboost import CatBoostRegressor, CatBoostClassifier, Pool, EFstrType
+from os.path import dirname, realpath, join
+from PyQt5.QtWidgets import QApplication, QWidget, QFileDialog, QTableWidget, QTableWidgetItem
+from PyQt5.uic import loadUiType
+import pandas as pd
+import numpy as np
+from PyQt5 import QtCore, QtGui, QtWidgets, QtWebEngineWidgets
+from PyQt5.QtCore import Qt
+import plotly as go2
+import kaleido as ka
+import plotly.express as px
+
+
+#scriptDir = dirname(realpath("D:\python\Storage Area Network\Data-Analyze-in-gui-Pyqt5-python-main\Data-Analyze-in-gui-Pyqt5-python-main\bestsellers with categories.csv"))
+#From_Main, _ = loadUiType(join(dirname("D:\python\Storage Area Network\Data-Analyze-in-gui-Pyqt5-python-main\Data-Analyze-in-gui-Pyqt5-python-main\Main.ui"), "Main.ui"))
+From_Main, _ = loadUiType(join(dirname("D:\python\Storage Area Network\Data-Analyze-in-gui-Pyqt5-python-main\Data-Analyze-in-gui-Pyqt5-python-main\Main_modified3.ui"
+), "Main_modified3.ui"))
+
+class MainWindow(QWidget, From_Main):
+    def __init__(self):
+        super(MainWindow, self).__init__()
+        QWidget.__init__(self)
+        self.setupUi(self)
+        
+        self.browser = QtWebEngineWidgets.QWebEngineView(self)
+        
+        #vlayout = QtWidgets.QVBoxLayout(self)
+        #vlayout.addWidget(self.BtnDescribe, alignment=QtCore.Qt.AlignHCenter)
+        #self.browser.setGeometry(QtCore.QRect(730, 170, 444, 596))
+        self.horizontalLayout_2.addWidget(self.browser)
+
+        self.ButtonOpen.clicked.connect(self.OpenFile)
+        self.BtnDescribe.clicked.connect(self.dataHead)
+        self.BtnDescribe.clicked.connect(self.prediction)
+        self.BtnDescribe.clicked.connect(self.dataHead2)
+        
+        #self.BtnDescribe.clicked.connect(self.predict_model_v2)
+        #self.BtnDescribe.clicked.connect(self.plotter)
+        
+        #QtCore.QObject.connect(self.start, QtCore.SIGNAL('clicked()'), self.trial)
+        #QtCore.QObject.connect(self.start, QtCore.SIGNAL('clicked()'), self.trial2)
+
+        self.pushButton_3.clicked.connect(self.predict_model_v2)
+        self.pushButton_3.clicked.connect(self.plotter)
+
+    def OpenFile(self):
+        global all_data
+        try:
+            path = QFileDialog.getOpenFileName(self, 'Open CSV', os.getenv('HOME'), 'CSV(*.csv)')[0]
+            self.all_data = pd.read_csv(path)
+        except:
+            print(path)
+      
+       
+
+    def dataHead(self):
+        numColomn = self.spinBox.value()
+        if numColomn == 0:
+            NumRows = len(self.all_data.index)
+        else:
+            NumRows = numColomn
+        self.tableWidget.setColumnCount(len(self.all_data.columns))
+        self.tableWidget.setRowCount(NumRows)
+        self.tableWidget.setHorizontalHeaderLabels(self.all_data.columns)
+
+        for i in range(NumRows):
+            for j in range(len(self.all_data.columns)):
+                self.tableWidget.setItem(i, j, QTableWidgetItem(str(self.all_data.iat[i, j])))
+
+        self.tableWidget.resizeColumnsToContents()
+        self.tableWidget.resizeRowsToContents()
+    
+    def prediction(self):
+        global bestmodel
+        bestmodel = CatBoostRegressor()
+        bestmodel.load_model('D:\python\Storage Area Network\model_catboost_regressor_prod') 
+        dataset = self.all_data #pd.read_csv("D:\python\Storage Area Network\dataset_for_programm.csv")#pd.read_csv(all_data) #
+        dataset_param = dataset.drop(columns=['value'])
+        value_pd = dataset.loc[:, dataset.columns.intersection(['value'])]
+        value = value_pd.to_numpy()
+        diff_pred = bestmodel.predict(dataset_param)
+        value_pred = value[1] + 12 * diff_pred
+        value_pred_pd = pd.DataFrame(value_pred)
+        value_pred_pd.set_axis(['Pred'], axis='columns', inplace=True)
+        value_pred_pd.loc[:, "True"] = value_pd
+        dataframe = pd.DataFrame(value_pred_pd) 
+        #dataframe.to_csv("D:\python\Storage Area Network\csv_export.csv", index=False)
+        self.all_data2 = dataframe
+
+    
+    def dataHead2(self):
+        numColomn = self.spinBox_2.value()
+        if numColomn == 0:
+            NumRows = len(self.all_data2.index)
+        else:
+            NumRows = numColomn
+        self.tableWidget_2.setColumnCount(len(self.all_data2.columns))
+        self.tableWidget_2.setRowCount(NumRows)
+        self.tableWidget_2.setHorizontalHeaderLabels(self.all_data2.columns)
+
+        for i in range(NumRows):
+            for j in range(len(self.all_data2.columns)):
+                self.tableWidget_2.setItem(i, j, QTableWidgetItem(str(self.all_data2.iat[i, j])))
+
+        self.tableWidget_2.resizeColumnsToContents()
+        self.tableWidget_2.resizeRowsToContents()
+        
+        # Визуализация
+    def predict_model_v2(self):
+        
+        self.all_data['value_predict'] = 0
+        df_for_model = self.all_data.loc[len(self.all_data2)-13:len(self.all_data2)-13]
+        value_predict =bestmodel.predict(df_for_model.drop(columns=['value', 'value_predict']))[0]
+        for i in range(len(self.all_data)-12, len(self.all_data)):
+            if i == len(self.all_data)-12:
+                self.all_data.loc[i:i, 'value_predict'] = self.all_data.loc[i, 'value'] + value_predict
+            else:
+                self.all_data.loc[i:i, 'value_predict'] = self.all_data.loc[i-1, 'value_predict'] + value_predict
+
+        return self.all_data
+
+    def plotter(self):
+        df_period = self.all_data.loc[:len(self.all_data)-13]
+        df_predict = self.all_data.loc[len(self.all_data)-12:]
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df_period.index, y=df_period['value'], mode='lines', name='value'))
+        fig.add_trace(go.Scatter(x=df_predict.index, y=df_predict['value'], mode='lines', opacity=0.7, name='value_true'))
+        fig.add_trace(go.Scatter(x=df_predict.index, y=df_predict['value_predict'], mode='lines',  name='value_predict'))
+        self.browser.setHtml(fig.to_html(include_plotlyjs='cdn'))
+        #self.vlayout().addWidget(self.browser)
+        #fig.show()
+        #fig.write_image("yourfile.png") 
+        #a = go2.io.write_image(fig, "D:\python\Storage Area Network\go_export.jpg")
+        #a = go2.offline.plot(fig, filename="D:\python\Storage Area Network\go_export")
+        #self.label_3.setPixmap(QtGui.QPixmap("D:\python\Storage Area Network\go_export.jpg"))
+
+        
+app = QApplication(sys.argv)
+sheet = MainWindow()
+sheet.show()
+sys.exit(app.exec_())
