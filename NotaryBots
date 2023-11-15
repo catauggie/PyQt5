@@ -1,0 +1,312 @@
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QFileDialog, QLabel, QProgressBar, QTableWidget, QTableWidgetItem, QProgressDialog
+from PyQt5.QtCore import Qt
+from pandas import read_excel
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import os
+import sys
+
+class PlotCanvas(FigureCanvas):
+    def __init__(self, parent=None, width=5, height=4, dpi=100):
+        fig = Figure(figsize=(width, height), dpi=dpi)
+        self.axes = fig.add_subplot(111)
+        super(PlotCanvas, self).__init__(fig)
+
+class CoordinateAnalyzerApp(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        self.df = None
+        self.output_df = None
+        self.selected_rows = []
+        self.image_folder = 'images'
+        self.image_saving_progress_dialog = None
+
+        self.init_ui()
+
+    def init_ui(self):
+        # Create widgets
+        self.load_button = QPushButton('Load Excel File', self)
+        self.analyze_button = QPushButton('Analyze Coordinates', self)
+        self.save_button = QPushButton('Save Bot DataFrame', self)
+        self.plot_button = QPushButton('Plot Selected Rows', self)
+        self.info_label = QLabel(self)
+        self.progress_bar = QProgressBar(self)
+        self.result_table = QTableWidget(self)
+        self.plot_canvas = PlotCanvas(self)
+
+        # Set up layout
+        layout = QVBoxLayout()
+        layout.addWidget(self.load_button)
+        layout.addWidget(self.analyze_button)
+        layout.addWidget(self.save_button)
+        layout.addWidget(self.info_label)
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.result_table)
+        layout.addWidget(self.plot_button)
+        layout.addWidget(self.plot_canvas)
+        self.setLayout(layout)
+
+        # Connect buttons to functions
+        self.load_button.clicked.connect(self.load_excel)
+        self.analyze_button.clicked.connect(self.analyze_coordinates)
+        self.save_button.clicked.connect(self.save_bot_dataframe)
+        self.plot_button.clicked.connect(self.plot_selected_rows)
+
+        # Set up the main window
+        self.setGeometry(300, 300, 800, 600)
+        self.setWindowTitle('Coordinate Analyzer')
+        self.show()
+
+    def remove_last_number_and_semicolon(self, line):
+        num_digits = self.count_digits_before_last_semicolon(line)
+        if line.endswith(","):
+            line = line[:-1]  # Remove the last semicolon
+        last_comma_index = line.rfind(",")  # Find the last comma index
+        if last_comma_index != -1 and line[last_comma_index:].count(";") == 1:
+            line = line[:last_comma_index + num_digits + 1]  # Remove the last number and last semicolon
+
+        # Remove comma if it is the last symbol in the line
+        if line.endswith(","):
+            line = line[:-1]
+
+        return line
+
+    def count_digits_before_last_semicolon(self, line):
+        last_semicolon_index = line.rfind(";")
+        if last_semicolon_index == -1:
+            return 0  # If there is no semicolon in the line, return 0
+
+        before_semicolon = line[:last_semicolon_index]
+        last_comma_index = before_semicolon.rfind(",")
+        if last_comma_index == -1:
+            return 0  # If there is no comma before the last semicolon, return 0
+
+        number_before_semicolon = before_semicolon[last_comma_index + 1:]
+        num_digits = sum(1 for char in number_before_semicolon if char.isdigit())
+        return num_digits
+
+    def process_coordinate_df(self, input_df, straight_line_threshold=100):
+        bot_indexes = []
+        human_indexes = []
+
+        total_rows = len(input_df['Массив координат'])
+        self.progress_bar.setMaximum(total_rows)
+        self.progress_bar.setValue(0)
+
+        for index, cell_value in enumerate(input_df['Массив координат']):
+            if pd.isnull(cell_value) or cell_value == "":
+                continue  # Skip iteration if the cell value is NaN or empty
+
+            cell_value = self.remove_last_number_and_semicolon(cell_value)
+            coord_list = cell_value.split(';')
+
+            # Check if any empty string is present in coord_list
+            if any(not coord for coord in coord_list):
+                continue  # Skip iteration if an empty string is found
+
+            x_coords = [int(coord.split(',')[0]) for coord in coord_list]
+            y_coords = [int(coord.split(',')[1]) for coord in coord_list]
+
+            straight_line_detected = False
+            for i in range(2, len(coord_list)):
+                x1, y1 = map(int, coord_list[i - 2].split(','))
+                x2, y2 = map(int, coord_list[i].split(','))
+
+                if abs((y2 - y1) * (x_coords[i - 1] - x1) - (x2 - x1) * (y_coords[i - 1] - y1)) < straight_line_threshold:
+                    straight_line_detected = True
+                    break
+
+            if straight_line_detected:
+                human_indexes.append(index)
+            else:
+                bot_indexes.append(index)
+
+            self.progress_bar.setValue(index + 1)
+            QApplication.processEvents()  # Ensure the GUI updates
+
+        max_index = max(max(bot_indexes), max(human_indexes))
+        concatenated_list = [1 if i in bot_indexes else 0 if i in human_indexes else np.nan for i in range(max_index + 1)]
+
+        input_df['Bot'] = concatenated_list
+        self.output_df = input_df[input_df['Bot'] == 1]   # Retain 'Массив координат' in the output DataFrame
+        return self.output_df
+
+    def load_excel(self):
+        options = QFileDialog.Options()
+        file_name, _ = QFileDialog.getOpenFileName(self, "Open Excel File", "", "Excel Files (*.xlsx);;All Files (*)", options=options)
+
+        if file_name:
+            self.df = read_excel(file_name)
+            self.info_label.setText(f'Loaded Excel file: {file_name}')
+            self.result_table.setRowCount(0)  # Clear existing table when loading a new file
+
+    def analyze_coordinates(self):
+        if self.df is not None:
+            self.load_button.setEnabled(False)
+            self.analyze_button.setEnabled(False)
+            self.save_button.setEnabled(False)
+            self.plot_button.setEnabled(False)
+
+            self.progress_bar.reset()
+            self.result_table.clear()
+
+            # Process coordinates
+            self.df = self.process_coordinate_df(self.df)
+
+            # Display resulting table with checkboxes
+            self.result_table.setColumnCount(len(self.df.columns))
+            self.result_table.setHorizontalHeaderLabels(self.df.columns)
+            self.result_table.setRowCount(len(self.df))
+            for i, row in enumerate(self.df.itertuples(index=False)):
+                for j, value in enumerate(row):
+                    item = QTableWidgetItem(str(value))
+                    if j == 0:  # Assuming 'Массив координат' is the first column
+                        item.setFlags(item.flags() | 0x00001000)  # Add ItemIsUserCheckable flag
+                        item.setCheckState(0)  # Initially unchecked
+                    self.result_table.setItem(i, j, item)
+
+            self.info_label.setText('Coordinates Analyzed. Select rows to plot.')
+            self.plot_button.setEnabled(True)
+
+            # Set output_df to the processed DataFrame
+            self.output_df = self.df
+
+            # Enable the Save button
+            self.save_button.setEnabled(True)
+        else:
+            self.info_label.setText('Please load an Excel file first.')
+
+
+    def save_bot_dataframe(self):
+        straight_line_threshold = 100
+        if self.output_df is not None:
+            # Save DataFrame to Excel
+            file_name, _ = QFileDialog.getSaveFileName(self, "Save Bot DataFrame", "", "Excel Files (*.xlsx);;All Files (*)")
+
+            if file_name:
+                self.output_df.to_excel(file_name, index=False)
+                self.info_label.setText(f'Bot DataFrame saved to: {file_name}')
+
+                # Save plots to 'images' folder
+                if not os.path.exists(self.image_folder):
+                    os.makedirs(self.image_folder)
+
+                # Initialize progress bar for image saving
+                total_rows = len(self.df)
+                self.image_saving_progress_dialog = QProgressDialog("Saving Images...", "Cancel", 0, total_rows, self)
+                self.image_saving_progress_dialog.setWindowTitle('Image Saving Progress')
+                self.image_saving_progress_dialog.setWindowModality(Qt.WindowModal)
+
+                for row_index in range(total_rows):
+                    if self.image_saving_progress_dialog.wasCanceled():
+                        break
+
+                    cell_value = self.df['Массив координат'].iloc[row_index]
+                    if pd.isnull(cell_value) or cell_value == "":
+                        continue  # Skip iteration if the cell value is NaN or empty
+
+                    cell_value = self.remove_last_number_and_semicolon(cell_value)
+                    coord_list = cell_value.split(';')
+
+                    # Check if any empty string is present in coord_list
+                    if any(not coord for coord in coord_list):
+                        continue  # Skip iteration if an empty string is found
+
+                    # Extract x and y coordinates from each pair
+                    x_coords = [int(coord.split(',')[0]) for coord in coord_list]
+                    y_coords = [int(coord.split(',')[1]) for coord in coord_list]
+
+                    # Calculate movement patterns
+                    straight_line_detected = False
+                    for i in range(2, len(coord_list)):
+                        x1, y1 = map(int, coord_list[i - 2].split(','))
+                        x2, y2 = map(int, coord_list[i].split(','))
+
+                        # Check if the segment forms a straight line
+                        if abs((y2 - y1) * (x_coords[i - 1] - x1) - (x2 - x1) * (y_coords[i - 1] - y1)) < straight_line_threshold:
+                            straight_line_detected = True
+                            break
+
+                    # Plot and save as JPG
+                    if straight_line_detected:
+                        plt.plot(x_coords, y_coords, label=f"User {self.df['ACCOUNT_ID'].iloc[row_index]} - Human")
+                    else:
+                        plt.plot(x_coords, y_coords, label=f"User {self.df['ACCOUNT_ID'].iloc[row_index]} - Bot")
+
+                    # Add legend and labels
+                    plt.legend()
+                    plt.xlabel('X Coordinate')
+                    plt.ylabel('Y Coordinate')
+                    plt.title(f'Trajectory {row_index + 1}')
+                    plt.savefig(os.path.join(self.image_folder, f'trajectory_{row_index + 1}.jpg'))
+                    plt.clf()  # Clear the figure for the next plot
+
+                    # Update the progress bar
+                    self.image_saving_progress_dialog.setValue(row_index + 1)
+
+                # Close the progress bar
+                self.image_saving_progress_dialog.setValue(total_rows)
+                self.image_saving_progress_dialog.close()
+
+                self.info_label.setText(f'Plots saved to: {os.path.abspath(self.image_folder)}')
+        else:
+            self.info_label.setText('Please analyze coordinates first.')
+
+    def plot_selected_rows(self):
+        straight_line_threshold = 100
+        self.selected_rows = [i for i in range(self.result_table.rowCount()) if self.result_table.item(i, 0).checkState() == 2]
+
+        if not self.selected_rows:
+            self.info_label.setText('No rows selected for plotting.')
+        else:
+            self.plot_button.setEnabled(False)
+
+            # Plot selected rows
+            for row_index in self.selected_rows:
+                cell_value = self.df['Массив координат'].iloc[row_index]
+                if pd.isnull(cell_value) or cell_value == "":
+                    continue  # Skip iteration if the cell value is NaN or empty
+
+                cell_value = self.remove_last_number_and_semicolon(cell_value)
+                coord_list = cell_value.split(';')
+
+                # Check if any empty string is present in coord_list
+                if any(not coord for coord in coord_list):
+                    continue  # Skip iteration if an empty string is found
+
+                # Extract x and y coordinates from each pair
+                x_coords = [int(coord.split(',')[0]) for coord in coord_list]
+                y_coords = [int(coord.split(',')[1]) for coord in coord_list]
+
+                # Calculate movement patterns
+                straight_line_detected = False
+                for i in range(2, len(coord_list)):
+                    x1, y1 = map(int, coord_list[i - 2].split(','))
+                    x2, y2 = map(int, coord_list[i].split(','))
+
+                    # Check if the segment forms a straight line
+                    if abs((y2 - y1) * (x_coords[i - 1] - x1) - (x2 - x1) * (y_coords[i - 1] - y1)) < straight_line_threshold:
+                        straight_line_detected = True
+                        break
+
+                self.plot_canvas.axes.plot(x_coords, y_coords, label=f"User {self.df['ACCOUNT_ID'].iloc[row_index]} - bot")
+
+            # Add legend and labels
+            self.plot_canvas.axes.legend()
+            self.plot_canvas.axes.set_xlabel('X Coordinate')
+            self.plot_canvas.axes.set_ylabel('Y Coordinate')
+            self.plot_canvas.axes.set_title(f'Bot Trajectory')
+
+            # Draw the canvas
+            self.plot_canvas.draw()
+
+            self.plot_button.setEnabled(True)
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    ex = CoordinateAnalyzerApp()
+    sys.exit(app.exec_())
